@@ -2,7 +2,7 @@
 
 const byId = id => document.getElementById(id);
 const storageKey = 'quotation-maker-v1';
-const blankItem = () => ({ description: '', qty: '1', rate: '' });
+const blankItem = () => ({ description: '', type: '', colour: '', qty: '1', rate: '' });
 const localDate = () => {
   const now = new Date();
   return [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'),
@@ -68,7 +68,7 @@ function quotationHTML(quote, profile, systemName) {
   const row = (label, value, css = '') => '<div class="sum ' + css + '"><span>' + escape(label) + '</span><span>' + money(value) + '</span></div>';
   const details = [profile.address, profile.phone, profile.email].filter(Boolean).map(escape).join('\n');
   let lines = quote.items.map((item, i) => item.description.trim() || numeric(item.rate) || t.lines[i]
-    ? '<tr><td>' + escape(item.description || 'Item') + '</td><td>' + numeric(item.qty) +
+    ? '<tr><td>' + escape(item.description || 'Item') + materialDetails(item) + '</td><td>' + numeric(item.qty) +
       '</td><td>' + money(cents(numeric(item.rate))) + '</td><td>' + money(t.lines[i]) + '</td></tr>' : '').join('');
   if (!lines) lines = '<tr><td colspan="4">Add an item to see it here.</td></tr>';
 
@@ -92,12 +92,24 @@ function quotationHTML(quote, profile, systemName) {
 
 function update() { persist(); renderPreview(); }
 
+function materialFields(item, binding) {
+  return '<div class="material-fields"><label>Type<input ' + binding + '="type" placeholder="e.g. Longspan" value="' +
+    escape(item.type) + '"></label><label>Colour<input ' + binding + '="colour" placeholder="e.g. Slate grey" value="' +
+    escape(item.colour) + '"></label></div>';
+}
+
+function materialDetails(item) {
+  return [['Type', item.type], ['Colour', item.colour]]
+    .filter(([, value]) => value && value.trim())
+    .map(([label, value]) => '<div class="material-detail">' + label + ': ' + escape(value.trim()) + '</div>').join('');
+}
+
 function renderItems() {
   byId('items').innerHTML = quote.items.map((item, index) =>
     '<div class="item" data-index="' + index + '"><label>Description<input data-item="description" placeholder="Item or service" value="' +
     escape(item.description) + '"></label><label>Qty<input data-item="qty" type="number" min="0" step="any" value="' +
     escape(item.qty) + '"></label><label>Rate<input data-item="rate" type="number" min="0" step="0.01" placeholder="0.00" value="' +
-    escape(item.rate) + '"></label><button class="remove" aria-label="Remove item ' + (index + 1) + '" data-remove>×</button></div>').join('');
+    escape(item.rate) + '"></label><button class="remove" aria-label="Remove item ' + (index + 1) + '" data-remove>×</button>' + materialFields(item, 'data-item') + '</div>').join('');
 }
 
 function fillInputs(selector, attribute, data) {

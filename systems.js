@@ -92,7 +92,7 @@ function refreshSystems() {
   options(byId('system'),systems.map(s=>[s.name,s.id]));
   byId('system').value=currentSystem().id;
   const list=currentSystem().items;
-  options(byId('catalog'),list.length ? list.map((i,n)=>[i.description,String(n)]) : [['No saved items','']]);
+  options(byId('catalog'),list.length ? list.map((i,n)=>[ [i.description,i.type,i.colour].filter(Boolean).join(' · '), String(n)]) : [['No saved items','']]);
   byId('use-item').disabled=!list.length;
 }
 byId('system').onchange = e => {
@@ -101,13 +101,13 @@ byId('system').onchange = e => {
 };
 byId('use-item').onclick = () => {
   const item=structuredClone(currentSystem().items[Number(byId('catalog').value)]);
-  const empty=quote.items.findIndex(i=>!i.description && !i.rate);
+  const empty=quote.items.findIndex(i=>!i.description && !i.rate && !i.type && !i.colour);
   if(empty<0) quote.items.push(item); else quote.items[empty]=item;
   renderItems();update();
 };
 function templateRows() {
   byId('template-items').innerHTML=templateDraft.items.map((item,i)=>
-    '<div class="item catalog-row" data-row="'+i+'"><label>Item name<input required data-field="description" value="'+escape(item.description)+'"></label><label>Qty<input required type="number" min="0.000001" step="any" data-field="qty" value="'+escape(item.qty)+'"></label><label>Rate<input type="number" min="0" step="0.01" data-field="rate" value="'+escape(item.rate)+'"></label><button type="button" data-drop aria-label="Remove saved item">×</button></div>').join('');
+    '<div class="item catalog-row" data-row="'+i+'"><label>Item name<input required data-field="description" value="'+escape(item.description)+'"></label><label>Qty<input required type="number" min="0.000001" step="any" data-field="qty" value="'+escape(item.qty)+'"></label><label>Rate<input type="number" min="0" step="0.01" data-field="rate" value="'+escape(item.rate)+'"></label><button type="button" data-drop aria-label="Remove saved item">×</button>' + materialFields(item, 'data-field') + '</div>').join('');
 }
 function editSystem(existing) {
   templateDraft=existing ? structuredClone(currentSystem()) : starter(crypto.randomUUID(),'','',[]);
