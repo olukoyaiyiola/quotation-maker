@@ -48,6 +48,44 @@ function calculate(q) {
   return { lines, subtotal, labor, transport, discount, tax, total: base + tax };
 }
 
+const smallNumbers = 'zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen'.split(' ');
+const tensNames = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+const scales = ['', 'thousand', 'million', 'billion', 'trillion'];
+const currencyWords = {
+  NGN: ['naira', 'naira', 'kobo', 'kobo'],
+  USD: ['dollar', 'dollars', 'cent', 'cents'],
+  GBP: ['pound', 'pounds', 'penny', 'pence'],
+  EUR: ['euro', 'euros', 'cent', 'cents'],
+  GHS: ['cedi', 'cedis', 'pesewa', 'pesewas']
+};
+
+function underThousand(n) {
+  if (n < 20) return smallNumbers[n];
+  if (n < 100) return tensNames[Math.floor(n / 10)] + (n % 10 ? '-' + smallNumbers[n % 10] : '');
+  return smallNumbers[Math.floor(n / 100)] + ' hundred' + (n % 100 ? ' and ' + underThousand(n % 100) : '');
+}
+
+function integerWords(n) {
+  if (!n) return 'zero';
+  const groups = [];
+  const finalGroup = n % 1000;
+  for (let scale = 0; n; scale++, n = Math.floor(n / 1000)) {
+    const group = n % 1000;
+    if (group) groups.unshift([underThousand(group), scales[scale]].filter(Boolean).join(' '));
+  }
+  if (groups.length > 1 && finalGroup > 0 && finalGroup < 100) groups.splice(-1, 0, 'and');
+  return groups.join(' ');
+}
+
+function amountInWords(totalCents, currency) {
+  if (!Number.isSafeInteger(totalCents) || totalCents < 0) return 'Amount exceeds the supported range.';
+  const major = Math.floor(totalCents / 100), minor = totalCents % 100;
+  const units = currencyWords[currency];
+  let words = integerWords(major) + ' ' + units[major === 1 ? 0 : 1];
+  if (minor) words += ' and ' + integerWords(minor) + ' ' + units[minor === 1 ? 2 : 3];
+  return words[0].toUpperCase() + words.slice(1) + ' only';
+}
+
 const escape = value => String(value ?? '').replace(/[&<>"']/g, character =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
 const image = (value, name) => /^data:image\/(png|jpeg|webp);base64,/.test(value || '')
@@ -85,6 +123,7 @@ function quotationHTML(quote, profile, systemName) {
     (quote.discount ? row('Discount', -t.discount) : '') +
     (quote.tax ? row(quote.taxType === 'deduct' ? 'Tax deduction' : 'Tax', t.tax) : '') +
     row('Grand total', t.total, 'grand') + '</div>' +
+    '<div class="foot"><p class="cap">AMOUNT IN WORDS</p><p>' + amountInWords(t.total, profile.currency) + '</p></div>' +
     (quote.notes.trim() ? '<div class="foot"><p class="cap">Notes</p><p class="detail">' + escape(quote.notes) + '</p></div>' : '') +
     (profile.signature || profile.signer || profile.signerPosition ? '<div class="foot"><p class="cap">Authorized signatory</p>' +
     image(profile.signature, 'signature') +
