@@ -26,6 +26,7 @@ function nextNumber(system, year, history) {
   return n;
 }
 function nextReference() {
+  if (quote.recordRef) return quote.recordRef;
   const s = currentSystem(), year = currentYear();
   return reference(s.code, year, nextNumber(s, year, records));
 }
@@ -43,48 +44,98 @@ function readAll(db) {
     req.onerror = () => reject(req.error);
   });
 }
-// Allocate and save in one transaction so two tabs cannot issue the same reference.
-async function saveRecord() {
-  const db = await database, system = currentSystem(), year = currentYear();
-  const snapshot = {id:crypto.randomUUID(),systemId:system.id,systemName:system.name,code:system.code,year,
-    at:new Date().toISOString(),quote:structuredClone(quote),profile:structuredClone(profile)};
-  if (archiveKey) {
-    // Competing devices may calculate the same next number. Only the first
-    // write can claim it. Re-read the archive before repeating a claim.
-    let candidate = nextNumber(system, year, await readAll(db));
-    const prefix = 'BNL/Q/' + system.code + '/' + year + '/';
-    for (;;) {
-      const manifest = await cloud('GET');
-      for (const item of manifest) {
-        if (item.ref.startsWith(prefix)) candidate = Math.max(candidate, Number(item.ref.slice(prefix.length)) + 1);
+// Compare the last version seen by the editor inside the write transaction.
+async function writeRecord(record, expectedVersion) {
+  const db=await database;
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction('records','readwrite'), store=tx.objectStore('records');
+    const get=store.get(record.ref);
+    let conflict=false;
+    get.onsuccess=()=>{
+      const old=get.result;
+      if ((old && old.id!==record.id) || (old?.version || null)!==expectedVersion) {
+        conflict=true;tx.abort();return;
       }
-      snapshot.serial = candidate;
-      snapshot.ref = reference(system.code, year, candidate);
-      snapshot.quote.number = snapshot.ref;
-      try { await cloud('POST',snapshot); break; }
-      catch (error) { if (error.status !== 409) throw error; candidate++; }
-    }
-    await new Promise((resolve,reject) => {
-      const tx = db.transaction('records','readwrite');
-      tx.objectStore('records').put(snapshot);
-      tx.oncomplete = resolve;
-      tx.onabort = () => reject(tx.error);
-    });
-    return snapshot;
-  }
-  return new Promise((resolve,reject) => {
-    const tx = db.transaction('records','readwrite'), store = tx.objectStore('records');
-    const all = store.getAll();
-    all.onsuccess = () => {
-      snapshot.serial = nextNumber(system,year,all.result);
-      snapshot.ref = reference(system.code,year,snapshot.serial);
-      snapshot.quote.number = snapshot.ref;
-      store.add(snapshot);
+      store.put(record);
     };
-    tx.oncomplete = () => resolve(snapshot);
-    tx.onabort = () => reject(tx.error || Error('History could not be saved.'));
+    tx.oncomplete=resolve;
+    tx.onabort=()=>reject(conflict?Error('This reference changed. Reopen the quotation from history.'):tx.error);
   });
 }
+function templateItems(system) {
+  return system.items.length ? structuredClone(system.items) : [blankItem()];
+}
+function startQuotation(system) {
+  quote={...newQuote(),systemId:system.id,items:templateItems(system)};
+  showEditor();
+}
+function showEditor() {
+  const locked=quote.recordStatus==='issued';
+  document.querySelector('.editor').inert=locked;
+  byId('save').disabled=locked;
+  refreshSystems();
+  byId('system').disabled=Boolean(quote.recordRef);
+  byId('new-template').disabled=Boolean(quote.recordRef);
+  fillInputs('[data-q]','q',quote);renderItems();update();
+  if(locked)byId('status').textContent='Exported · '+quote.recordRef;
+}
+function loadDraft(record) {
+  quote={...structuredClone(record.quote),recordRef:record.ref,recordVersion:record.version,recordStatus:record.status};
+  showEditor();
+}
+function validateQuotation(q) {
+  function amount(value,minimum,strict=false) {
+    return value!=null && String(value).trim()!=='' && Number.isFinite(Number(value)) &&
+      (strict ? Number(value)>minimum : Number(value)>=minimum);
+  }
+  if(!String(q.client || '').trim())throw Error('Enter the client name.');
+  if(!q.date)throw Error('Enter the issue date.');
+  if(!q.items.length)throw Error('Add at least one item.');
+  q.items.forEach((item,i)=>{
+    if(!item.description?.trim())throw Error('Enter a description for item '+(i+1)+'.');
+    if(!amount(item.qty,0,true))throw Error('Enter a quantity above zero for item '+(i+1)+'.');
+    if(!amount(item.rate,0))throw Error('Enter a rate for item '+(i+1)+'.');
+  });
+  for(const [field,label] of [['labor','workmanship cost'],['transport','transportation cost']]){
+    if(!amount(q[field],0))throw Error('Enter the '+label+'. Enter 0 if there is no charge.');
+  }
+  if(q.tax&&!amount(q.taxRate,0))throw Error('Enter the tax rate or turn tax off.');
+  if(q.discount&&!amount(q.discountValue,0))throw Error('Enter the discount value or turn discount off.');
+}
+async function draftSnapshot() {
+  validateQuotation(quote);
+  const local=await readAll(await database);
+  if(quote.recordRef){
+    const old=local.find(r=>r.ref===quote.recordRef);
+    if(old?.status!=='draft'||old.version!==quote.recordVersion)throw Error('Reopen the current version from history.');
+    return {...old,quote:structuredClone(quote),profile:structuredClone(profile)};
+  }
+  const system=currentSystem(),year=currentYear();
+  let serial=nextNumber(system,year,local);
+  if(archiveKey){
+    const prefix='BNL/Q/'+system.code+'/'+year+'/';
+    for(const r of await cloud('GET'))if(r.ref.startsWith(prefix))serial=Math.max(serial,Number(r.ref.slice(prefix.length))+1);
+  }
+  const ref=reference(system.code,year,serial);
+  return {id:crypto.randomUUID(),systemId:system.id,systemName:system.name,code:system.code,year,serial,ref,
+    quote:{...structuredClone(quote),number:ref},profile:structuredClone(profile)};
+}
+async function commitRecord(snapshot,status) {
+  const previous=snapshot.version || null;
+  const record={...snapshot,status,at:new Date().toISOString(),version:crypto.randomUUID()};
+  delete record.quote.recordRef;delete record.quote.recordStatus;delete record.quote.recordVersion;
+  record.quote.number=record.ref;
+  if(archiveKey){
+    await cloud('POST',record);
+    record.baseVersion=record.version;
+  }
+  await writeRecord(record,previous);
+  records=await readAll(await database);
+  return record;
+}
+byId('new').onclick=()=>{
+  if(quote.recordStatus==='issued'||confirm('Start a new quotation with the selected system’s template items?'))startQuotation(currentSystem());
+};
 function options(select, entries) {
   select.replaceChildren(...entries.map(([name,value]) => new Option(name,value)));
 }
@@ -96,8 +147,9 @@ function refreshSystems() {
   byId('use-item').disabled=!list.length;
 }
 byId('system').onchange = e => {
-  quote.systemId=e.target.value;
-  refreshSystems(); update();
+  const system=systems.find(s=>s.id===e.target.value);
+  if(!confirm('Replace the item list with the items from '+system.name+'?')){refreshSystems();return}
+  quote.systemId=system.id;quote.items=templateItems(system);showEditor();
 };
 byId('use-item').onclick = () => {
   const item=structuredClone(currentSystem().items[Number(byId('catalog').value)]);
@@ -139,7 +191,8 @@ byId('template-form').onsubmit=e=>{
   s.start=Number(byId('system-start').value);s.startYear=currentYear();
   const index=systems.findIndex(i=>i.id===s.id);
   if(index<0) systems.push(s);else systems[index]=s;
-  quote.systemId=s.id;refreshSystems();update();byId('template').close();
+  if(quote.systemId!==s.id){quote.systemId=s.id;quote.items=templateItems(s)}
+  showEditor();byId('template').close();
 };
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>b.closest('dialog').close());
 function showHistory() {
@@ -148,8 +201,8 @@ function showHistory() {
     .sort((a,b)=>b.at.localeCompare(a.at));
   byId('record-list').replaceChildren(...matching.map(r=>{
     const b=document.createElement('button');b.className='record';b.textContent=r.ref;
-    const sub=document.createElement('small');sub.textContent=[r.systemName,r.quote.client,dateLabel(r.quote.date)].filter(Boolean).join(' · ');
-    b.append(sub);b.onclick=()=>{selectedRecord=r;byId('archive-paper').innerHTML=quotationHTML(r.quote,r.profile,r.systemName);byId('archive-view').showModal()};return b;
+    const sub=document.createElement('small');sub.textContent=[r.status==='draft'?'Draft':'Exported',r.systemName,r.quote.client,dateLabel(r.quote.date)].filter(Boolean).join(' · ');
+    b.append(sub);b.onclick=()=>{selectedRecord=r;byId('record-heading').textContent=r.status==='draft'?'Saved draft':'Exported quotation';byId('edit-draft').hidden=false;byId('edit-draft').textContent=r.status==='draft'?'Edit draft':'Copy to new quotation';byId('archive-paper').innerHTML=quotationHTML(r.quote,r.profile,r.systemName);byId('archive-view').showModal()};return b;
   }));
   byId('record-info').textContent=matching.length+' matching record'+(matching.length===1?'':'s')+' on this device.';
 }
@@ -165,30 +218,76 @@ byId('history').onclick=async()=>{
 };
 byId('search').oninput=byId('filter').onchange=showHistory;
 
-async function printRecord(r) {
-  const paper=byId('paper-print');paper.innerHTML=quotationHTML(r.quote,r.profile,r.systemName);
-  await Promise.all(Array.from(paper.querySelectorAll('img'), img => img.decode()));
-  paper.classList.add('active');document.title=r.ref.replaceAll('/','-');
-  const cleanup=()=>{paper.classList.remove('active');document.title='Bumick Quotation'};
-  window.addEventListener('afterprint',cleanup,{once:true});window.print();
+let busy=false;
+async function runAction(action) {
+  if(busy)return;
+  busy=true;
+  try {await action()} catch(e){alert(e.message)} finally{busy=false}
 }
-let issuing=false;
-async function issue(mode) {
-  if(issuing)return;
-  if(!quote.items.some(i=>i.description.trim() && Number(i.qty)>0))return alert('Add an item with a name and quantity before issuing this quotation.');
-  issuing=true;
-  try{
-    const r=await saveRecord();records=await readAll(await database);renderPreview();
-    byId('status').textContent='Recorded '+r.ref;
-    if(archiveKey)syncArchive();
-    if(mode==='print')await printRecord(r);else await showImages(r);
-  }catch(error){alert('Could not complete the export. Check Record history before retrying. '+error.message)}
-  finally{issuing=false}
+byId('save').onclick=()=>runAction(async()=>{
+  const saved=await commitRecord(await draftSnapshot(),'draft');
+  loadDraft(saved);byId('status').textContent='Draft saved · '+saved.ref;
+});
+byId('edit-draft').onclick=()=>{
+  if(!confirm('Open this quotation in the editor? This replaces the current working copy.'))return;
+  byId('archive-view').close();byId('records').close();
+  if(selectedRecord.status==='draft'){loadDraft(selectedRecord);return}
+  quote={...structuredClone(selectedRecord.quote),systemId:selectedRecord.systemId,date:localDate()};
+  delete quote.recordRef;delete quote.recordVersion;delete quote.recordStatus;
+  showEditor();
+};
+let exportSource=null, exportFile=null, printImage=null;
+const fileUrls=[];
+function openExport(record) {
+  try{validateQuotation(record?.quote || quote)}
+  catch(e){alert(e.message);return}
+  exportSource=record;
+  byId('formats').hidden=false;byId('file-actions').hidden=true;
+  byId('export-info').textContent=record && record.status!=='draft'?'Choose a file format.':'Choose a format to export and lock this quotation.';
+  byId('export-dialog').showModal();
 }
-byId('print').onclick=()=>issue('print');byId('png').onclick=()=>issue('image');
-byId('reprint').onclick=()=>printRecord(selectedRecord).catch(e=>alert(e.message));
-byId('reimage').onclick=()=>showImages(selectedRecord).catch(e=>alert(e.message));
-document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='p'){e.preventDefault();if(byId('archive-view').open)byId('reprint').click();else issue('print')}});
+byId('export').onclick=()=>openExport(quote.recordStatus==='issued'?records.find(r=>r.ref===quote.recordRef):null);
+byId('record-export').onclick=()=>openExport(selectedRecord);
+document.querySelectorAll('[data-format]').forEach(button=>button.onclick=()=>runAction(async()=>{
+  const snapshot=exportSource || await draftSnapshot();
+  const format=button.dataset.format;
+  const canvas=await renderExportPage(snapshot);
+  const jpeg=format==='pdf'?await canvasBlob(canvas,'image/jpeg'):null;
+  const blob=jpeg?await onePagePdf(jpeg,canvas.width,canvas.height):await canvasBlob(canvas,'image/png');
+  canvas.width=canvas.height=1;
+  if(!byId('export-dialog').open)return;
+  if(!exportSource || snapshot.status==='draft'){
+    const saved=await commitRecord(snapshot,'issued');
+    if(!exportSource || quote.recordRef===saved.ref)loadDraft(saved);
+    if(exportSource){selectedRecord=saved;byId('edit-draft').textContent='Copy to new quotation';byId('record-heading').textContent='Exported quotation';showHistory()}
+    exportSource=saved;
+  }
+  exportFile=new File([blob],snapshot.ref.replaceAll('/','-')+'.'+format,{type:blob.type});
+  const download=byId('download-file');
+  download.href=URL.createObjectURL(blob);fileUrls.push(download.href);
+  download.download=exportFile.name;download.textContent='Download '+format.toUpperCase();
+  if(jpeg){printImage=URL.createObjectURL(jpeg);fileUrls.push(printImage)}
+  byId('print-file').hidden=!jpeg;
+  byId('share-file').hidden=!navigator.canShare?.({files:[exportFile]});
+  byId('export-info').textContent='One-page '+format.toUpperCase()+' ready · '+snapshot.ref;
+  byId('formats').hidden=true;byId('file-actions').hidden=false;
+}));
+byId('export-dialog').addEventListener('close',()=>{
+  for(const url of fileUrls.splice(0))URL.revokeObjectURL(url);
+  exportFile=null;printImage=null;
+});
+byId('share-file').onclick=async()=>{
+  try{await navigator.share({files:[exportFile]})}catch(e){if(e.name!=='AbortError')alert('Use Download to attach the file in your app.')}
+};
+byId('print-file').onclick=async()=>{
+  const paper=byId('paper-print'),img=new Image();img.src=printImage;
+  try{await img.decode();paper.replaceChildren(img);paper.classList.add('active');
+    window.addEventListener('afterprint',()=>paper.classList.remove('active'),{once:true});window.print()
+  }catch(e){alert(e.message)}
+};
+document.addEventListener('keydown',e=>{
+  if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='p'){e.preventDefault();if(!byId('export-dialog').open)openExport(byId('archive-view').open?selectedRecord:quote.recordStatus==='issued'?records.find(r=>r.ref===quote.recordRef):null)}
+});
 
 async function cloud(method,body) {
   const res=await fetch('/api/archive',{method,headers:{Authorization:'Bearer '+archiveKey,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
@@ -201,15 +300,21 @@ async function syncArchive() {
   syncing=true;
   try{
     const db=await database, manifest=await cloud('GET'), local=await readAll(db);
-    const remote=new Map(manifest.map(x=>[x.ref,x.id])), localRefs=new Map(local.map(x=>[x.ref,x.id]));
+    const remote=new Map(manifest.map(x=>[x.ref,x]));
+    const localRefs=new Map(local.map(x=>[x.ref,x]));
     for(const r of local){
-      if(remote.has(r.ref)&&remote.get(r.ref)!==r.id)throw Error('Reference conflict for '+r.ref+'. Both copies were preserved.');
-      if(!remote.has(r.ref))await cloud('POST',r);
+      const other=remote.get(r.ref);
+      if(other && other.id!==r.id)throw Error('Reference conflict for '+r.ref+'. Both copies were preserved.');
+      if(!other || (r.version && r.version!==r.baseVersion)){
+        await cloud('POST',r);
+        if(r.version)await writeRecord({...r,baseVersion:r.version},r.version);
+      }
     }
     for(const item of manifest){
-      if(localRefs.has(item.ref))continue;
+      const old=localRefs.get(item.ref);
+      if(old && (!old.version || old.version!==old.baseVersion || old.version===item.version))continue;
       const r=await cloud('POST',{lookup:item.ref});
-      await new Promise((resolve,reject)=>{const tx=db.transaction('records','readwrite');tx.objectStore('records').add(r);tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error)});
+      await writeRecord({...r,baseVersion:r.version},old?.version || null);
     }
     records=await readAll(db);historyFilters();showHistory();renderPreview();
     byId('cloud-message').textContent='Cloud archive is up to date.';
@@ -220,5 +325,6 @@ byId('connect').onclick=()=>{archiveKey=byId('archive-key').value.trim();if(!arc
 byId('disconnect').onclick=()=>{archiveKey='';sessionStorage.removeItem('bumick-archive-key');byId('cloud-message').textContent='Disconnected.'};
 window.addEventListener('online',syncArchive);
 fillInputs('[data-q]','q',quote);fillInputs('[data-p]','p',profile);
-refreshSystems();renderItems();update();
+if(!cached.quote)quote.items=templateItems(currentSystem());
+showEditor();
 database.then(readAll).then(items=>{records=items;renderPreview();if(archiveKey)syncArchive()}).catch(()=>{byId('status').textContent='History storage unavailable'});

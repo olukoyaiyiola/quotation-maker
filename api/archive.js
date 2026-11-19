@@ -14,8 +14,9 @@ module.exports = async function handler(req,res) {
   try{
     const index='bumick:archive:index';
     if(req.method==='GET'){
-      const pairs=await redis(['HGETALL',index]);
-      const list=[];for(let i=0;i<pairs.length;i+=2)list.push({ref:pairs[i],id:pairs[i+1]});
+      const [pairs,versions]=await redis(['EVAL',"return {redis.call('HGETALL',KEYS[1]),redis.call('HGETALL',KEYS[2])}",2,index,index+':versions']);
+      const revisions=new Map();for(let i=0;i<versions.length;i+=2)revisions.set(versions[i],versions[i+1]);
+      const list=[];for(let i=0;i<pairs.length;i+=2)list.push({ref:pairs[i],id:pairs[i+1],version:revisions.get(pairs[i])});
       return res.json(list);
     }
     if(req.method!=='POST')return res.status(405).end();
@@ -24,8 +25,20 @@ module.exports = async function handler(req,res) {
     const path='bumick:archive:record:'+ref;
     if(record.lookup){const value=await redis(['GET',path]);return value?res.json(JSON.parse(value)):res.status(404).end()}
     if(typeof record.id!=='string' || !Array.isArray(record.quote?.items) || !record.profile || record.quote.number!==ref)return res.status(400).end();
-    const script="local id=redis.call('HGET',KEYS[1],ARGV[1]); if id then if id==ARGV[2] then return 1 else return 0 end end; redis.call('SET',KEYS[2],ARGV[3]); redis.call('HSET',KEYS[1],ARGV[1],ARGV[2]); return 1";
-    const ok=await redis(['EVAL',script,2,index,path,ref,record.id,JSON.stringify(record)]);
+    const script = `
+      local existing = redis.call('GET', KEYS[2])
+      if existing then
+        local old = cjson.decode(existing)
+        if old.id ~= ARGV[2] then return 0 end
+        if (old.version or '') == ARGV[4] then return 1 end
+        if old.status ~= 'draft' or old.version ~= ARGV[5] then return 0 end
+      end
+      redis.call('SET', KEYS[2], ARGV[3])
+      redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+      redis.call('HSET', KEYS[3], ARGV[1], ARGV[4])
+      return 1
+    `;
+    const ok=await redis(['EVAL',script,3,index,path,index+':versions',ref,record.id,JSON.stringify(record),record.version || '',record.baseVersion || '']);
     return ok?res.json({saved:true}):res.status(409).end();
   }catch{return res.status(502).json({error:'Archive service unavailable'})}
 };

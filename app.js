@@ -182,13 +182,6 @@ byId('add').onclick = () => {
   update();
   byId('items').lastElementChild.querySelector('input').focus();
 };
-byId('new').onclick = () => {
-  if (!window.confirm('Start a new quotation? This replaces the current draft and keeps your company profile.')) return;
-  quote = { ...newQuote(), systemId: currentSystem().id };
-  fillInputs('[data-q]', 'q', quote);
-  renderItems();
-  update();
-};
 byId('company').onclick = () => byId('profile').showModal();
 byId('close').onclick = byId('done').onclick = () => byId('profile').close();
 
@@ -225,4 +218,3 @@ document.querySelectorAll('[data-clear]').forEach(button => {
     profileMessage('Image removed.');
   };
 });
-
