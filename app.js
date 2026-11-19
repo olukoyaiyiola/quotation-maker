@@ -86,8 +86,10 @@ function quotationHTML(quote, profile, systemName) {
     (quote.tax ? row(quote.taxType === 'deduct' ? 'Tax deduction' : 'Tax', t.tax) : '') +
     row('Grand total', t.total, 'grand') + '</div>' +
     (quote.notes.trim() ? '<div class="foot"><p class="cap">Notes</p><p class="detail">' + escape(quote.notes) + '</p></div>' : '') +
-    (profile.signature || profile.signer ? '<div class="foot"><p class="cap">Authorized signatory</p>' +
-    image(profile.signature, 'signature') + '<p class="detail">' + escape(profile.signer) + '</p></div>' : ''));
+    (profile.signature || profile.signer || profile.signerPosition ? '<div class="foot"><p class="cap">Authorized signatory</p>' +
+    image(profile.signature, 'signature') +
+    (profile.signer ? '<p><strong>' + escape(profile.signer) + '</strong></p>' : '') +
+    (profile.signerPosition ? '<p class="detail">' + escape(profile.signerPosition) + '</p>' : '') + '</div>' : ''));
 }
 
 function update() { persist(); renderPreview(); }
