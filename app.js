@@ -8,21 +8,21 @@ const localDate = () => {
   return [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'),
     String(now.getDate()).padStart(2, '0')].join('-');
 };
-const newQuote = sequence => ({
-  client: '', number: 'QT-' + String(sequence).padStart(3, '0'), date: localDate(),
-  valid: '', contact: '', labor: '', transport: '', discount: false, discountType: 'percent',
+const newQuote = () => ({
+  client: '', date: localDate(),
+  contact: '', labor: '', transport: '', discount: false, discountType: 'percent',
   discountValue: '', tax: false, taxType: 'add', taxRate: '', notes: '', items: [blankItem()]
 });
 
 let cached = {};
 try { cached = JSON.parse(localStorage.getItem(storageKey)) || {}; } catch {}
-let sequence = cached.sequence || 1;
-let quote = { ...newQuote(sequence), ...cached.quote };
-const profile = { currency: 'NGN', ...cached.profile };
+
+let quote = { ...newQuote(), ...cached.quote };
+const profile = { name: 'Bumick', currency: 'NGN', ...cached.profile };
 
 function persist() {
   try {
-    localStorage.setItem(storageKey, JSON.stringify({ sequence, quote, profile }));
+    localStorage.setItem(storageKey, JSON.stringify({ systems, quote, profile }));
     byId('status').textContent = 'Saved on this device';
     return true;
   } catch {
@@ -57,6 +57,11 @@ const dateLabel = value => value ? new Intl.DateTimeFormat('en-NG', { dateStyle:
 function renderPreview() {
   byId('discount-fields').hidden = !quote.discount;
   byId('tax-fields').hidden = !quote.tax;
+  quote.number = nextReference();
+  byId('reference').value = quote.number;
+  byId('paper').innerHTML = quotationHTML(quote, profile, currentSystem().name);
+}
+function quotationHTML(quote, profile, systemName) {
   const format = new Intl.NumberFormat('en-NG', { style: 'currency', currency: profile.currency, currencyDisplay: 'narrowSymbol' });
   const money = value => escape(format.format(value / 100));
   const t = calculate(quote);
@@ -67,13 +72,13 @@ function renderPreview() {
       '</td><td>' + money(cents(numeric(item.rate))) + '</td><td>' + money(t.lines[i]) + '</td></tr>' : '').join('');
   if (!lines) lines = '<tr><td colspan="4">Add an item to see it here.</td></tr>';
 
-  byId('paper').innerHTML =
+  return (
     '<div class="paperhead"><div>' + image(profile.logo, 'logo') + '<strong>' + escape(profile.name || 'Your company') +
     '</strong><div class="detail">' + details + '</div></div><div class="right"><h2>Quotation</h2><p class="detail">' +
-    escape(quote.number) + '</p></div></div>' +
+    escape(quote.number) + '</p><p class="detail">' + escape(systemName) + '</p></div></div>' +
     '<div class="meta"><div><p class="cap">Prepared for</p><strong>' + escape(quote.client || 'Client name') +
     '</strong><p class="detail">' + escape(quote.contact) + '</p></div><div class="right detail"><div>Issued ' +
-    dateLabel(quote.date) + '</div>' + (quote.valid ? '<div>Valid until ' + dateLabel(quote.valid) + '</div>' : '') +
+    dateLabel(quote.date) + '</div>' +
     '</div></div><table><thead><tr><th scope="col">Item</th><th scope="col">Qty</th><th scope="col">Rate</th><th scope="col">Amount</th></tr></thead><tbody>' +
     lines + '</tbody></table><div class="totals">' + row('Items subtotal', t.subtotal) +
     row('Workmanship', t.labor) + row('Transportation', t.transport) +
@@ -81,8 +86,8 @@ function renderPreview() {
     (quote.tax ? row(quote.taxType === 'deduct' ? 'Tax deduction' : 'Tax', t.tax) : '') +
     row('Grand total', t.total, 'grand') + '</div>' +
     (quote.notes.trim() ? '<div class="foot"><p class="cap">Notes</p><p class="detail">' + escape(quote.notes) + '</p></div>' : '') +
-    (profile.signature || profile.signer ? '<div class="foot"><p class="cap">Authorized signature</p>' +
-    image(profile.signature, 'signature') + '<p class="detail">' + escape(profile.signer) + '</p></div>' : '');
+    (profile.signature || profile.signer ? '<div class="foot"><p class="cap">Authorized signatory</p>' +
+    image(profile.signature, 'signature') + '<p class="detail">' + escape(profile.signer) + '</p></div>' : ''));
 }
 
 function update() { persist(); renderPreview(); }
@@ -126,16 +131,10 @@ byId('add').onclick = () => {
 };
 byId('new').onclick = () => {
   if (!window.confirm('Start a new quotation? This replaces the current draft and keeps your company profile.')) return;
-  quote = newQuote(++sequence);
+  quote = { ...newQuote(), systemId: currentSystem().id };
   fillInputs('[data-q]', 'q', quote);
   renderItems();
   update();
-};
-byId('print').onclick = () => {
-  const title = document.title;
-  document.title = quote.number ? 'Quotation ' + quote.number : title;
-  window.addEventListener('afterprint', () => { document.title = title; }, { once: true });
-  window.print();
 };
 byId('company').onclick = () => byId('profile').showModal();
 byId('close').onclick = byId('done').onclick = () => byId('profile').close();
@@ -174,7 +173,3 @@ document.querySelectorAll('[data-clear]').forEach(button => {
   };
 });
 
-fillInputs('[data-q]', 'q', quote);
-fillInputs('[data-p]', 'p', profile);
-renderItems();
-update();
