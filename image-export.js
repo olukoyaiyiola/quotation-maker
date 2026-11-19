@@ -11,7 +11,7 @@ async function showImages(record) {
   const urls=[];
   try{
     await document.fonts.ready;
-    await Promise.all(Array.from(sheet.images,img=>img.decode()));
+    await Promise.all(Array.from(sheet.querySelectorAll('img'), img => img.decode()));
     const base=sheet.getBoundingClientRect(),ink=[],backgrounds=[];
     const area=r=>({x:r.left-base.left,y:r.top-base.top,w:r.width,h:r.height});
     for(const el of sheet.querySelectorAll('*')){

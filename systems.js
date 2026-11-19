@@ -167,7 +167,7 @@ byId('search').oninput=byId('filter').onchange=showHistory;
 
 async function printRecord(r) {
   const paper=byId('paper-print');paper.innerHTML=quotationHTML(r.quote,r.profile,r.systemName);
-  await Promise.all(Array.from(paper.images,img=>img.decode()));
+  await Promise.all(Array.from(paper.querySelectorAll('img'), img => img.decode()));
   paper.classList.add('active');document.title=r.ref.replaceAll('/','-');
   const cleanup=()=>{paper.classList.remove('active');document.title='Bumick Quotation'};
   window.addEventListener('afterprint',cleanup,{once:true});window.print();
