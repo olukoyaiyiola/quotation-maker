@@ -2,12 +2,22 @@
 (() => {
   const el=id=>document.getElementById(id);
   const params=new URLSearchParams(location.hash.slice(1));
-  const invite=params.get('invite');
+  const setup=params.has('admin-setup');
+  const hex=bytes=>Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
+  let invite=params.get('invite');
+  if(setup){
+    invite=sessionStorage.getItem('bumick-setup-token')||hex(crypto.getRandomValues(new Uint8Array(32)));
+    sessionStorage.setItem('bumick-setup-token',invite);
+    const note=document.createElement('label'),code=document.createElement('input');
+    note.textContent='Administrator setup ID. Send this ID to the project owner for approval.';
+    code.readOnly=true;code.onclick=()=>code.select();note.append(code);el('signin').prepend(note);
+    crypto.subtle.digest('SHA-256',new TextEncoder().encode(invite)).then(value=>{code.value=hex(new Uint8Array(value))});
+  }
   if(invite){
-    history.replaceState(null,'',location.pathname);
+    if(!setup)history.replaceState(null,'',location.pathname);
     el('auth-title').textContent='Activate your invitation and choose a password (at least 12 characters).';
     el('auth-submit').textContent='Activate account';
-    el('account-email').value=params.get('email')||'';
+    el('account-email').value=setup?'adekunleadelani170@gmail.com':params.get('email')||'';
     el('account-password').autocomplete='new-password';
   }
   async function request(body){
@@ -20,7 +30,8 @@
     e.preventDefault();el('auth-submit').disabled=true;
     try{
       await request({action:invite?'activate':'login',email:el('account-email').value,password:el('account-password').value,invite});
-      location.reload();
+      sessionStorage.removeItem('bumick-setup-token');
+      location.replace(location.pathname);
     }catch(err){el('auth-message').textContent=err.message;el('auth-submit').disabled=false}
   };
   async function start(){
