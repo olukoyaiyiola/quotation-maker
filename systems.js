@@ -14,7 +14,7 @@ delete quote.valid;
 let records = [];
 let selectedRecord;
 let templateDraft;
-let archiveKey = sessionStorage.getItem('bumick-archive-key') || '';
+sessionStorage.removeItem('bumick-archive-key');
 const currentYear = () => new Date().getFullYear();
 const initials = name => (name.match(/[\p{L}\p{N}]+/gu) || []).map(word => word[0]).join('').toUpperCase().slice(0,16);
 const reference = (code,year,n) => 'BNL/Q/' + code + '/' + year + '/' + String(n).padStart(3,'0');
@@ -103,6 +103,7 @@ function validateQuotation(q) {
   if(q.discount&&!amount(q.discountValue,0))throw Error('Enter the discount value or turn discount off.');
 }
 async function draftSnapshot() {
+  await window.refreshCompany();
   validateQuotation(quote);
   const local=await readAll(await database);
   if(quote.recordRef){
@@ -112,7 +113,7 @@ async function draftSnapshot() {
   }
   const system=currentSystem(),year=currentYear();
   let serial=nextNumber(system,year,local);
-  if(archiveKey){
+  {
     const prefix='BNL/Q/'+system.code+'/'+year+'/';
     for(const r of await cloud('GET'))if(r.ref.startsWith(prefix))serial=Math.max(serial,Number(r.ref.slice(prefix.length))+1);
   }
@@ -125,7 +126,7 @@ async function commitRecord(snapshot,status) {
   const record={...snapshot,status,at:new Date().toISOString(),version:crypto.randomUUID()};
   delete record.quote.recordRef;delete record.quote.recordStatus;delete record.quote.recordVersion;
   record.quote.number=record.ref;
-  if(archiveKey){
+  {
     await cloud('POST',record);
     record.baseVersion=record.version;
   }
@@ -213,7 +214,7 @@ function historyFilters(){
   byId('filter').value=selected || '';
 }
 byId('history').onclick=async()=>{
-  try{records=await readAll(await database);historyFilters();showHistory();byId('records').showModal();if(archiveKey)syncArchive();}
+  try{records=await readAll(await database);historyFilters();showHistory();byId('records').showModal();syncArchive();}
   catch{alert('This browser could not open the quotation history.')}
 };
 byId('search').oninput=byId('filter').onchange=showHistory;
@@ -249,7 +250,8 @@ function openExport(record) {
 byId('export').onclick=()=>openExport(quote.recordStatus==='issued'?records.find(r=>r.ref===quote.recordRef):null);
 byId('record-export').onclick=()=>openExport(selectedRecord);
 document.querySelectorAll('[data-format]').forEach(button=>button.onclick=()=>runAction(async()=>{
-  const snapshot=exportSource || await draftSnapshot();
+  if(exportSource)await window.refreshCompany();
+  const snapshot=exportSource?.status==='draft' ? {...exportSource,profile:structuredClone(profile)} : exportSource || await draftSnapshot();
   const format=button.dataset.format;
   const canvas=await renderExportPage(snapshot);
   const jpeg=format==='pdf'?await canvasBlob(canvas,'image/jpeg'):null;
@@ -290,13 +292,14 @@ document.addEventListener('keydown',e=>{
 });
 
 async function cloud(method,body) {
-  const res=await fetch('/api/archive',{method,headers:{Authorization:'Bearer '+archiveKey,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
-  if(!res.ok)throw Object.assign(Error(({401:'Check the archive access key.',409:'A different quotation already uses this reference in the cloud.',503:'Configure the private archive on Vercel first.'})[res.status] || 'Cloud archive unavailable.'),{status:res.status});
+  const res=await fetch('/api/archive',{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+  if(res.status===401)location.reload();
+  if(!res.ok)throw Object.assign(Error((await res.json().catch(()=>({}))).error || ({401:'Check the archive access key.',409:'A different quotation already uses this reference in the cloud.',503:'Configure the private archive on Vercel first.'})[res.status] || 'Cloud archive unavailable.'),{status:res.status});
   return res.json();
 }
 let syncing=false;
 async function syncArchive() {
-  if(syncing || !archiveKey)return;
+  if(syncing)return;
   syncing=true;
   try{
     const db=await database, manifest=await cloud('GET'), local=await readAll(db);
@@ -321,10 +324,8 @@ async function syncArchive() {
   }catch(e){byId('cloud-message').textContent=e.message;byId('status').textContent='Cloud sync pending · see history';}
   finally{syncing=false}
 }
-byId('connect').onclick=()=>{archiveKey=byId('archive-key').value.trim();if(!archiveKey)return;sessionStorage.setItem('bumick-archive-key',archiveKey);byId('archive-key').value='';syncArchive()};
-byId('disconnect').onclick=()=>{archiveKey='';sessionStorage.removeItem('bumick-archive-key');byId('cloud-message').textContent='Disconnected.'};
 window.addEventListener('online',syncArchive);
 fillInputs('[data-q]','q',quote);fillInputs('[data-p]','p',profile);
 if(!cached.quote)quote.items=templateItems(currentSystem());
 showEditor();
-database.then(readAll).then(items=>{records=items;renderPreview();if(archiveKey)syncArchive()}).catch(()=>{byId('status').textContent='History storage unavailable'});
+database.then(readAll).then(items=>{records=items;renderPreview();syncArchive()}).catch(()=>{byId('status').textContent='History storage unavailable'});

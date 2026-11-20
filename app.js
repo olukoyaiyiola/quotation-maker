@@ -18,7 +18,7 @@ let cached = {};
 try { cached = JSON.parse(localStorage.getItem(storageKey)) || {}; } catch {}
 
 let quote = { ...newQuote(), ...cached.quote };
-const profile = { name: 'Bumick', currency: 'NGN', ...cached.profile };
+const profile = window.companySession.profile || { name: 'Bumick', currency: 'NGN', ...(window.companySession.account.role==='admin' ? cached.profile : {}) };
 
 function persist() {
   try {
